@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 
+"""
+author: chenyiyong
+email: 8665254@qq.com
+create_dt:2023/3/11 13:00
+describe:
+"""
+
 from czsc.connectors import vnpy_connector as manager
 
 #策略模板
