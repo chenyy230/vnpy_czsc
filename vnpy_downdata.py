@@ -24,7 +24,7 @@ from vnpy_mongodb.mongodb_database import MongodbDatabase
 
 pd.set_option('expand_frame_repr', False)  # 当列太多时不需要换行
 # 在这里设置你的掘金token，用于获取数据
-set_token("9c4f58eb3ef18b291d90ad76e1640b5c1b5588ca")
+set_token(" ")
 
 # 保存下载数据的位置
 # targetpath = os.path.abspath('.') + '\\JJdata\\'
