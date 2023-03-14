@@ -9,8 +9,8 @@ describe:
 
 from czsc.connectors import vnpy_connector as manager
 
-#策略模板
-from vnpy_ctastrategy.strategies.src.czsc_stocks import CzscStocksV230218
+# 策略模板
+from strategies.src.czsc_stocks import CzscStocksV230218
 #掘金数据下载
 import vnpy_downdata
 from czsc.fsa.im import IM
@@ -34,14 +34,16 @@ params = {
     # trader 缓存目录
     'cache_path': "D:\\czsc_qh_beta_cache",
     # 设定实盘交易的期货池
-    'symbols': ['ru2305','rb2305'],
+    'symbols': ['rb2305','SR305'],
     # 单个期货的最大持仓比例
     'symbol_max_pos': 0.24,
-    # CzscTrader初始交易开始的时间，这个时间之后的交易都会被缓存在对象中
-    'train_sdt': '20230225',
+    # 以当下时间倒推多少天，按照这个天数从数据库内获取数据，用于初始化策略
+    'init_days': 5,
+    # CzscTrader初始交易开始的时间，这个时间之后的交易都会被缓存在对象中,如果设置为0，则为实时计算交易
+    'trade_days': 1,
     # update trader时，K线获取的天数
     'delta_days': 1,
-    #交易策略
+    # 交易策略
     'strategy': CzscStocksV230218,
     # TraderCallback 回调类的参数
     'callback_params': {

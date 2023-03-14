@@ -1,39 +1,35 @@
 # -*- coding: utf-8 -*-
-
-"""
-author: chenyiyong
-email: 8665254@qq.com
-create_dt:2023/3/11 13:00
-describe:
-"""
-import pandas as pd
+import os
 from datetime import datetime, timedelta
-from loguru import logger
 from typing import List
-from czsc.traders.base import CzscTrader
-from czsc.objects import Freq, RawBar
 
+import czsc
+import pandas as pd
+import pymongo
+from czsc.connectors.vnpy_connector import get_exchange
 from czsc.connectors.vnpy_connector import params
 from czsc.fsa.im import IM
+from czsc.objects import Freq, RawBar
+from czsc.traders.base import CzscTrader
+from loguru import logger
+from czsc.utils.bar_generator import resample_bars
+from vnpy.trader.constant import Direction, Offset, Interval
 from vnpy.trader.engine import MainEngine, EventEngine
-
-import pymongo
 from vnpy.trader.object import Exchange
-from vnpy_mongodb.mongodb_database import MongodbDatabase
-from vnpy_ctastrategy import CtaTemplate
 from vnpy.trader.object import TickData, OrderData, TradeData, PositionData, BarData
-from vnpy.trader.constant import Direction, Offset,Interval
 from vnpy.trader.utility import BarGenerator
-from czsc.connectors.vnpy_connector import get_exchange
+from vnpy_ctastrategy import CtaTemplate
+from vnpy_mongodb.mongodb_database import MongodbDatabase
 
-
+freq_map = {"1m": Freq.F1, "5m": Freq.F5, "15m": Freq.F15, "30m": Freq.F30, "1h": Freq.F60, "d": Freq.D}
 dt_fmt = "%Y-%m-%d %H:%M:%S"
 
 # vnpy同czsc转换字典
 freq_czsc_vnpy = {"1分钟": Interval.MINUTE, "5分钟": Interval.MINUTE5, "15分钟": Interval.MINUTE15,
                   "30分钟": Interval.MINUTE30, "60分钟": Interval.HOUR, "日线": Interval.DAILY, "周线": Interval.WEEKLY}
-
+freq_fz_min = {"1分钟": "1m", "5分钟": "5m", "15分钟": "15m", "30分钟": "30m", "60分钟": '1h', "日线": 'd'}
 exchange_ft = {"SHFE": Exchange.SHFE, "CZCE": Exchange.CZCE, "DCE": Exchange.DCE, "INE": Exchange.INE}
+
 
 def get_kline_from_db1(symbol: str, period, start_time, end_time, **kwargs):
     """
@@ -62,19 +58,18 @@ def get_kline_from_db1(symbol: str, period, start_time, end_time, **kwargs):
     data = pd.DataFrame(list(table.find({'symbol': symbol})))  # 读取数据
     # 选择需要显示的字段
     data = data[
-        ['datetime', 'symbol', 'open_price', 'high_price', 'low_price', 'close_price', 'volume', 'interval', 'exchange',
-         'turnover']]
+        ['datetime', 'symbol', 'open_price', 'high_price', 'low_price', 'close_price', 'volume', 'turnover', 'interval',
+         'exchange']]
     # 打印输出
     df = data[data['interval'].isin([period])]
     df = df.loc[(df['datetime'] > start_time) & (df['datetime'] < end_time), :]
-    p_col = ['time', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'interval', 'exchange', 'amount']
+    p_col = ['dt', 'symbol', 'open', 'high', 'low', 'close', 'vol', 'amount', 'interval', 'exchange'  ]
     df.columns = p_col
     df.reset_index(inplace=True, drop=True)  # 重新设置排序
 
     if kwargs.get("df", True):
         return df
     else:
-        freq_map = {"1m": Freq.F1, "5m": Freq.F5, "1d": Freq.D}
         return format_qh_kline(df, freq=freq_map[period])
 
 
@@ -100,6 +95,17 @@ def get_kline_from_db2(symbol: str, exchange, interval, start_time, end_time):
     data = db.load_bar_data(symbol, exchange, interval, start_time, end_time)
     bars = format_vnpy_qh_kline(data, interval)
     return bars
+
+
+def save_kline(bars: List[BarData]) -> bool:
+    """
+    通过VNPY中mongodb数据接口存储数据库数据
+    """
+
+    # 连接数据库
+    db = MongodbDatabase()
+    # 存取数据
+    return db.save_bar_data(bars)
 
 
 # 将DataFrame格式数据转换成czsc库RawBar对象
@@ -196,7 +202,7 @@ def format_vnpy_qh_kline(bars: List[BarData], interval) -> List[RawBar]:
     return Rawbars
 
 
-def format_single_kline(BarData: BarData, last_id:int) -> RawBar:
+def format_single_kline(BarData: BarData, last_id: int) -> RawBar:
     """单根K线转换
     将VNPY中默认的BarData数据格式转换成CZSC库要求的RawBar数据。
     :param bars: VNPY中默认的BarData数据
@@ -227,7 +233,6 @@ def format_single_kline(BarData: BarData, last_id:int) -> RawBar:
     cache=None)
     """
 
-    freq_map = {"1m": Freq.F1, "5m": Freq.F5, "15m": Freq.F15, "30m": Freq.F30, "1h": Freq.F60, "d": Freq.D}
     bar = RawBar(symbol=BarData.symbol, dt=pd.to_datetime(BarData.datetime).astimezone(tz=None) + pd.to_timedelta('8H'),
                  id=last_id, freq=freq_map[BarData.interval.value],
                  open=BarData.open_price, close=BarData.close_price, high=BarData.high_price, low=BarData.low_price,
@@ -240,32 +245,39 @@ def format_single_kline(BarData: BarData, last_id:int) -> RawBar:
 class VnpyTradeManager(CtaTemplate):
     """VNPY交易管理器"""
     author = ""
-    
-    last_id=0
+
+    last_id = 0
 
     parameters = [
     ]
-    long_price= 0
-    short_price= 0
+    long_price = 0
+    short_price = 0
     variables = [
     ]
 
     def __init__(self, cta_engine, strategy_name, vt_symbol, setting):
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
+
         """
 
         """
-        self.vt_symbol=vt_symbol
-        self.main_engine :MainEngine= cta_engine.main_engine
+        self.vt_symbol = vt_symbol
+        self.main_engine: MainEngine = cta_engine.main_engine
         self.event_engine: EventEngine = cta_engine.event_engine
+        self.cache_path = params['cache_path']
+        os.makedirs(params['cache_path'], exist_ok=True)
         self.symbol = vt_symbol.split('.')[0]
         self.exchange = exchange_ft[get_exchange(self.symbol)]
         self.strategy = params['strategy']
         self.symbol_max_pos = params['symbol_max_pos']  # 每个标的最大持仓比例
-        self.trade_sdt = params['train_sdt']  # 交易跟踪开始日期
+        self.init_days = params['init_days']
+        self.trade_days = params['trade_days']
         self.base_freq = self.strategy(symbol='symbol').sorted_freqs[0]
-
+        self.other_freq = self.strategy(symbol='symbol').sorted_freqs[1:]
         self.delta_days = params['delta_days']  # 定时执行获取的K线天数
+
+        self.bars = None
+        self.traders = None
 
         self.bg = BarGenerator(self.on_bar)
         self.bg5 = BarGenerator(self.on_bar, 5, on_window_bar=self.on_min5_bar, interval=Interval.MINUTE5)
@@ -274,8 +286,9 @@ class VnpyTradeManager(CtaTemplate):
         self.bg60 = BarGenerator(self.on_bar, 1, on_window_bar=self.on_1hour_bar, interval=Interval.HOUR)
 
         if params['callback_params']['feishu_app_id'][1] and params['callback_params']['feishu_app_id'][2]:
-            self.im = IM(app_id=params['callback_params']['feishu_app_id'][1], app_secret=params['callback_params']['feishu_app_id'][2])
-            self.members =params['callback_params']['feishu_app_id'][3]
+            self.im = IM(app_id=params['callback_params']['feishu_app_id'][1],
+                         app_secret=params['callback_params']['feishu_app_id'][2])
+            self.members = params['callback_params']['feishu_app_id'][3]
         else:
             self.im = None
             self.members = None
@@ -283,7 +296,7 @@ class VnpyTradeManager(CtaTemplate):
         # 推送模式：detail-详细模式，summary-汇总模式
         self.feishu_push_mode = params['callback_params']['feishu_app_id'][0]
 
-        file_log =params['callback_params']['file_log']
+        file_log = params['callback_params']['file_log']
         if file_log:
             logger.add(file_log, rotation='1 day', encoding='utf-8', enqueue=True)
         self.file_log = file_log
@@ -309,21 +322,38 @@ class VnpyTradeManager(CtaTemplate):
         """
         Callback when strategy is inited.
         """
-        symbol = self.symbol
         self.traders = {}
-        bars = get_kline_from_db2(symbol, self.exchange, interval=freq_czsc_vnpy[self.base_freq],
-                                  start_time=self.trade_sdt,end_time=datetime.now())
-        
+        symbol = self.symbol
         try:
-            trader: CzscTrader = self.strategy(symbol=symbol).init_trader(bars, sdt='20220301')
+            # 调取数据库中基础K线数据
+            bars = get_kline_from_db2(symbol, self.exchange, interval=freq_czsc_vnpy[self.base_freq],
+                                      start_time=datetime.now() - timedelta(days=self.init_days),
+                                      end_time=datetime.now())
+            if bars:
+                self.bars = bars
+                print(bars[-1])
+                trader: CzscTrader = self.strategy(symbol=symbol).init_trader(bars, sdt=bars[-1].dt - timedelta(
+                    days=self.trade_days))
+            else:
+                # 如果基础K线数据不足，调取数据库中1分钟K线数据，转换成基础K线数据
+                df = get_kline_from_db1(symbol, period='1m', start_time=datetime.now() - timedelta(days=self.init_days),
+                                        end_time=datetime.now(), df=True)
+                df['dt'] = pd.to_datetime(df['dt']) + pd.to_timedelta('8H')
+                bars = resample_bars(df, self.base_freq)
+                self.bars = bars
+                print(bars[-1])
+                trader: CzscTrader = self.strategy(symbol=symbol).init_trader(bars, sdt=bars[-1].dt - timedelta(
+                    days=self.trade_days))
             self.traders[symbol] = trader
-            pos_info = {x.name: x.pos for x in trader.positions}
-            logger.info(f"{symbol} trader pos：{pos_info} | ensemble_pos: {trader.get_ensemble_pos('mean')}")
+            mean_pos = trader.get_ensemble_pos('mean')
+            if mean_pos != 0:
+                pos_info = {x.name: x.pos for x in trader.positions}
+                logger.info(f"{symbol} trader pos：{pos_info} | ensemble_pos: {trader.get_ensemble_pos('mean')}")
+
         except Exception as e:
             logger.exception(f'创建交易对象失败，symbol={symbol}, e={e}')
         self.write_log("策略初始化")
-        self.bars = bars
-        self.last_id:int = self.bars[-1].id
+        self.last_id: int = self.bars[-1].id
 
     def on_start(self):
         """
@@ -347,7 +377,7 @@ class VnpyTradeManager(CtaTemplate):
         """
         Callback of new bar data update.
         """
-       
+
         if self.base_freq == '1分钟':
             self.update_traders(bar)
         elif self.base_freq == '5分钟':
@@ -359,13 +389,13 @@ class VnpyTradeManager(CtaTemplate):
         elif self.base_freq == '60分钟':
             self.bg60.update_bar(bar)
 
-    def on_min5_bar(self,bar: BarData):
+    def on_min5_bar(self, bar: BarData):
         self.update_traders(bar)
 
-    def on_min15_bar(self,bar: BarData):
+    def on_min15_bar(self, bar: BarData):
         self.update_traders(bar)
 
-    def on_min30_bar(self,bar: BarData):
+    def on_min30_bar(self, bar: BarData):
         self.update_traders(bar)
 
     def on_1hour_bar(self, bar: BarData):
@@ -373,7 +403,9 @@ class VnpyTradeManager(CtaTemplate):
 
     def update_traders(self, bar: BarData):
         """更新交易策略"""
-        self.last_id = self.last_id+1
+        self.last_id = self.last_id + 1
+        # 实时将bar存入数据库，时刻让数据库中的数据与内存中的数据保持一致
+        save_kline([bar])
         bar = format_single_kline(bar, self.last_id)
 
         for symbol in self.traders.keys():
@@ -383,28 +415,28 @@ class VnpyTradeManager(CtaTemplate):
 
                 # 根据策略的交易信号，下单【期货多空都可】
                 # 根据vnpy的交易信号，下单
-                if self.pos==0:
-                    if trader.get_ensemble_pos(method='vote') == 1 and self.pos==0 and trader.pos_changed:
-                        self.buy(bar.close_price, 1)
-                        self.write_log(f"买入开仓：{bar.close_price}")
+                if self.pos == 0:
+                    if trader.get_ensemble_pos(method='vote') == 1 and self.pos == 0 and trader.pos_changed:
+                        self.buy(bar.close, 1)
+                        self.write_log(f"买入开仓：{bar.close}")
 
-                    elif trader.get_ensemble_pos(method='vote') == -1 and self.pos==0 and trader.pos_changed:
-                        self.short(bar.close_price, 1)
-                        self.write_log(f"卖出开仓：{bar.close_price}")
-                elif self.pos>0:
+                    elif trader.get_ensemble_pos(method='vote') == -1 and self.pos == 0 and trader.pos_changed:
+                        self.short(bar.close, 1)
+                        self.write_log(f"卖出开仓：{bar.close}")
+                elif self.pos > 0:
                     if trader.get_ensemble_pos(method='vote') == -1 and trader.pos_changed:
-                        self.sell(bar.close_price, abs(self.pos))
-                        self.short(bar.close_price, 1)
-                        self.write_log(f"买入平仓：{bar.close_price}_卖出开仓：{bar.close_price}")
-                elif self.pos<0:
+                        self.sell(bar.close, abs(self.pos))
+                        self.short(bar.close, 1)
+                        self.write_log(f"买入平仓：{bar.close}_卖出开仓：{bar.close}")
+                elif self.pos < 0:
                     if trader.get_ensemble_pos(method='vote') == 1 and trader.pos_changed:
-                        self.cover(bar.close_price, abs(self.pos))
-                        self.buy(bar.close_price, 1)
-                        self.write_log(f"卖出平仓：{bar.close_price}_买入开仓：{bar.close_price}")
+                        self.cover(bar.close, abs(self.pos))
+                        self.buy(bar.close, 1)
+                        self.write_log(f"卖出平仓：{bar.close}_买入开仓：{bar.close}")
 
                 # 更新交易对象
                 self.traders[symbol] = trader
-                
+
                 pos_info = {x.name: x.pos for x in trader.positions}
                 logger.info(f"{symbol} trader pos：{pos_info} | ensemble_pos: {trader.get_ensemble_pos('mean')}")
 
@@ -412,7 +444,6 @@ class VnpyTradeManager(CtaTemplate):
                 logger.error(f"{symbol} 更新交易策略失败，原因是 {e}")
 
             self.sync_data()
-
 
     def on_order(self, order: OrderData):
         """
@@ -435,15 +466,16 @@ class VnpyTradeManager(CtaTemplate):
         """
         Callback of new trade data update.
         """
-        logger.info(f"on trade callback:代码:{trade.vt_symbol}_{trade.direction}_{trade.offset}_{trade.price}_{trade.volume}")
+        logger.info(
+            f"on trade callback:代码:{trade.vt_symbol}_{trade.direction}_{trade.offset}_{trade.price}_{trade.volume}")
 
-        if self.pos !=0:
+        if self.pos != 0:
             if trade.direction == Direction.LONG and trade.offset == Offset.OPEN:
-                self.long_price = trade.price   # 记录开仓价格
-                self.long_time = trade.datetime # 记录开仓时间
+                self.long_price = trade.price  # 记录开仓价格
+                self.long_time = trade.datetime  # 记录开仓时间
             elif trade.direction == Direction.SHORT and trade.offset == Offset.OPEN:
                 self.short_price = trade.price  # 记录开仓价格
-                self.short_time = trade.datetime    # 记录开仓时间
+                self.short_time = trade.datetime  # 记录开仓时间
 
         if self.feishu_push_mode == 'detail':
             msg = f"成交变动通知：\n{'*' * 31}\n" \
@@ -453,7 +485,7 @@ class VnpyTradeManager(CtaTemplate):
                   f"成交量：{int(trade.volume)}\n" \
                   f"成交价：{round(trade.price, 2)}"
             self.push_message(msg, msg_type='text')
-            
+
     def on_position(self, position: PositionData):
         """
         Callback of new position data update.
@@ -468,5 +500,3 @@ class VnpyTradeManager(CtaTemplate):
                   f"持仓量：{int(position.volume)}\n" \
                   f"昨持仓量：{int(position.yd_volume)}\n"
             self.push_message(msg, msg_type='text')
-        
-

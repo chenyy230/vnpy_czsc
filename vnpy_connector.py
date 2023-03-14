@@ -6,7 +6,7 @@ email: 8665254@qq.com
 create_dt:2023/3/11 13:00
 describe:
 """
-
+import os
 import json
 from time import sleep
 from logging import INFO
@@ -14,7 +14,8 @@ from logging import INFO
 from vnpy.event import EventEngine
 from vnpy.trader.setting import SETTINGS
 from vnpy.trader.engine import MainEngine
-# from czsc.fsa.im import IM
+from vnpy_datarecorder import RecorderEngine
+from czsc.fsa.im import IM
 
 from vnpy_tts import TtsGateway
 from vnpy_ctp import CtpGateway
@@ -139,7 +140,7 @@ def vnpy_run():
     # 加载CTA应用模块
     cta_engine: CtaEngine = main_engine.add_app(CtaStrategyApp)
     main_engine.write_log("CTA应用模块创建成功")
-    # 加载仿真帐户应用模块
+    # 加载仿真账户应用模块
     main_engine.add_app(PaperAccountApp)
     # 加载日志引擎
     log_engine = main_engine.get_engine("log")
@@ -197,13 +198,6 @@ def vnpy_run():
     # 启动策略
     cta_engine.start_all_strategies()
     main_engine.write_log("CTA策略全部启动")
-
-    # # 启动定时任务
-    # scheduler = BlockingScheduler()
-    # for symbol in params['symbols']:
-    #     scheduler.add_job(cta_engine.get_position, args=symbol, trigger='cron', minute='*/5')
-    #
-    # scheduler.start()
 
     # 启动ui主界面，这里是为了方便查看策略状态（如果不用，以下四行可以注释掉）
     sleep(20)

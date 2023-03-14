@@ -7,8 +7,12 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from copy import copy
+from tzlocal import get_localzone
 from glob import glob
 from concurrent.futures import Future
+
+from vnpy.trader.converter import OffsetConverter,PositionHolding
+
 
 from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
@@ -16,6 +20,7 @@ from vnpy.trader.object import (
     CancelRequest,
     LogData,
     OrderRequest,
+    OrderQueryRequest,
     QuoteData,
     QuoteRequest,
     SubscribeRequest,
@@ -27,7 +32,8 @@ from vnpy.trader.object import (
     PositionData,
     AccountData,
     ContractData,
-    Exchange
+    Exchange,
+    PositionData
 )
 from vnpy.trader.event import (
     EVENT_TICK,
@@ -73,6 +79,7 @@ STOP_STATUS_MAP: Dict[Status, StopOrderStatus] = {
     Status.REJECTED: StopOrderStatus.CANCELLED
 }
 
+LOCAL_TZ = get_localzone()
 
 #新增模块
 #----------------------------------------------------------------------
@@ -99,11 +106,12 @@ class CtaEngine(BaseEngine):
         self.strategies: dict = {}                                      # strategy_name: strategy
 
         self.symbol_strategy_map: defaultdict = defaultdict(list)       # vt_symbol: strategy list
-        self.orderid_strategy_map: dict = {}                            # vt_orderid: strategy
+        self.orderid_strategy_map: dict[str, CtaTemplate] = {}                            # vt_orderid: strategy
         self.strategy_orderid_map: defaultdict = defaultdict(set)       # strategy_name: orderid list
 
         self.stop_order_count: int = 0                                  # for generating stop_orderid
-        self.stop_orders: Dict[str, StopOrder] = {}                     # stop_orderid: stop_order
+        self.stop_orders: Dict[str, StopOrder] = {}
+        self.offset_converter = OffsetConverter(main_engine)
 
         self.init_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1)
 
@@ -130,7 +138,7 @@ class CtaEngine(BaseEngine):
         self.event_engine.register(EVENT_TICK, self.process_tick_event)
         self.event_engine.register(EVENT_ORDER, self.process_order_event)
         self.event_engine.register(EVENT_TRADE, self.process_trade_event)
-
+        self.event_engine.register(EVENT_POSITION, self.process_position_event)
 
     def init_datafeed(self) -> None:
         """
@@ -155,6 +163,7 @@ class CtaEngine(BaseEngine):
         )
         data: List[BarData] = self.datafeed.query_bar_history(req, self.write_log)
         return data
+
 
     def process_tick_event(self, event: Event) -> None:
         """"""
@@ -228,6 +237,12 @@ class CtaEngine(BaseEngine):
 
         # Update GUI
         self.put_strategy_event(strategy)
+
+    def process_position_event(self, event: Event) -> None:
+        """"""
+        position: PositionData = event.data
+
+        self.offset_converter.update_position(position)
 
     def check_stop_order(self, tick: TickData) -> None:
         """"""
@@ -993,4 +1008,5 @@ class CtaEngine(BaseEngine):
         """获取持仓"""
         offset_converter = OffsetConverter(self.main_engine)
         return offset_converter.get_position_holding(vt_symbol)
+
 

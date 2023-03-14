@@ -1,0 +1,30 @@
+{
+    "rb2305_BollChannelStrategy": {
+        "pos": 0,
+        "boll_up": 4411.043661571733,
+        "boll_down": 4322.734116206045,
+        "cci_value": 79.46127946128014,
+        "atr_value": 14.323300089645686,
+        "intra_trade_high": 4391.0,
+        "intra_trade_low": 4379.0,
+        "long_stop": 0,
+        "short_stop": 0
+    },
+    "SR305_BollChannelStrategy": {
+        "pos": 0,
+        "boll_up": 6347.477776709356,
+        "boll_down": 6231.855556623978,
+        "cci_value": -5.192982456141352,
+        "atr_value": 17.835879630155787,
+        "intra_trade_high": 6297.0,
+        "intra_trade_low": 6272.0,
+        "long_stop": 0,
+        "short_stop": 0
+    },
+    "rb2305_VnpyTradeManager": {
+        "pos": 0
+    },
+    "SR305_VnpyTradeManager": {
+        "pos": 0
+    }
+}
